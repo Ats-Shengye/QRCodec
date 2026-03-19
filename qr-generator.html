@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Generator</title>
+    <script src="https://cdn.tailwindcss.com/3.4.17" integrity="sha384-igm5BeiBt36UU4gqwWS7imYmelpTsZlQ45FZf+XBn9MuJbn4nQr7yx1yFydocC/K" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js" integrity="sha384-rNlaE5fs9dGIjmxWDALQh/RBAaGRYT5ChrzHo6tRfgrZ36iRFAiquP5g41Jsv+0j" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #f3f4f6;
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #2d3748; }
+        ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #32cd32; }
+
+        /* ドロップゾーン */
+        #drop-zone {
+            transition: border-color 0.2s, background-color 0.2s;
+        }
+        #drop-zone.drag-over {
+            border-color: #32cd32;
+            background-color: rgba(50, 205, 50, 0.08);
+        }
+
+        /* QRグリッド内のQR画像 */
+        .qr-cell {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #2d2d2d;
+            border: 1px solid #374151;
+            border-radius: 0.5rem;
+            padding: 12px;
+            gap: 6px;
+        }
+        .qr-cell .qr-canvas-wrapper {
+            background: #ffffff;
+            border-radius: 4px;
+            display: inline-block;
+            line-height: 0;
+            padding: 16px;
+        }
+        .qr-cell .qr-canvas-wrapper canvas,
+        .qr-cell .qr-canvas-wrapper img {
+            display: block;
+        }
+        .qr-cell .qr-label {
+            font-size: 11px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            color: #9ca3af;
+            text-align: center;
+        }
+
+        /* スライドショーオーバーレイ */
+        #slideshow-overlay {
+            position: fixed;
+            inset: 0;
+            background-color: rgba(0, 0, 0, 0.92);
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+        }
+        #slideshow-overlay.hidden {
+            display: none;
+        }
+        #slideshow-qr-wrapper {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 12px;
+            display: inline-block;
+            line-height: 0;
+        }
+        #slideshow-progress-bar-inner {
+            height: 100%;
+            background-color: #32cd32;
+            transition: width linear;
+        }
+
+        /* 入力エリア */
+        #input-textarea {
+            resize: vertical;
+        }
+
+        /* ステータスバー */
+        #status-bar {
+            font-size: 11px;
+            color: #888;
+            text-align: center;
+            padding: 4px;
+        }
+        #status-bar.error { color: #f87171; }
+        #status-bar.ready { color: #32cd32; }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+
+    <!-- スライドショーオーバーレイ -->
+    <div id="slideshow-overlay" class="hidden">
+        <div class="flex items-center gap-4 w-full max-w-xl px-4">
+            <button id="btn-ss-prev" class="p-2 rounded bg-gray-700 hover:bg-gray-600 transition-colors text-lg font-bold flex-shrink-0">&lt;</button>
+            <div class="flex-1 text-center">
+                <div id="slideshow-label" class="text-sm font-mono text-gray-300 mb-2">-- / --</div>
+                <div id="slideshow-qr-wrapper">
+                    <div id="slideshow-qr-container"></div>
+                </div>
+                <!-- プログレスバー（自動送り時のタイムインジケーター） -->
+                <div class="w-full mt-3 bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                    <div id="slideshow-progress-bar-inner" style="width: 0%;"></div>
+                </div>
+            </div>
+            <button id="btn-ss-next" class="p-2 rounded bg-gray-700 hover:bg-gray-600 transition-colors text-lg font-bold flex-shrink-0">&gt;</button>
+        </div>
+
+        <div class="flex items-center gap-3 mt-2">
+            <button id="btn-ss-playpause" class="px-4 py-2 bg-[#32cd32] hover:bg-[#28a428] text-black font-semibold rounded transition-colors">一時停止</button>
+            <button id="btn-ss-close" class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded transition-colors">閉じる</button>
+        </div>
+
+        <div class="flex items-center gap-2 text-sm text-gray-400">
+            <label for="ss-interval-slider" class="whitespace-nowrap">間隔:</label>
+            <input id="ss-interval-slider" type="range" min="400" max="2000" step="100" value="800"
+                class="accent-[#32cd32] w-32">
+            <span id="ss-interval-label" class="font-mono text-[#32cd32] w-12 text-right">800ms</span>
+        </div>
+    </div>
+
+    <div class="w-full max-w-5xl mx-auto flex flex-col gap-6">
+
+        <!-- タイトル -->
+        <div class="flex items-center justify-between">
+            <h1 class="text-xl font-bold border-l-4 border-[#32cd32] pl-2">QR Generator</h1>
+            <span id="status-bar">待機中...</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <!-- 左カラム: 入力 -->
+            <div class="flex flex-col gap-4">
+
+                <!-- テキスト入力 -->
+                <div class="bg-gray-800 p-4 rounded-lg shadow border border-gray-700 flex flex-col gap-2">
+                    <h2 class="text-sm font-semibold text-gray-400">テキスト入力</h2>
+                    <textarea
+                        id="input-textarea"
+                        class="w-full min-h-[180px] bg-gray-900 text-gray-200 p-3 rounded font-mono text-sm border border-gray-700 focus:outline-none focus:border-[#32cd32]"
+                        placeholder="エンコードするテキストをここに入力..."></textarea>
+                </div>
+
+                <!-- ファイルドロップ -->
+                <div
+                    id="drop-zone"
+                    class="bg-gray-800 p-6 rounded-lg shadow border-2 border-dashed border-gray-600 flex flex-col items-center justify-center gap-2 cursor-pointer text-gray-500 hover:border-gray-400 transition-colors"
+                    role="button"
+                    tabindex="0"
+                    aria-label="ファイルをドロップまたはクリックして選択">
+                    <svg class="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                    </svg>
+                    <div class="text-sm">ファイルをドロップ / クリックして選択</div>
+                    <div class="text-xs text-gray-600">テキスト系ファイル対応</div>
+                    <input id="file-input" type="file" accept="text/*,.md,.json,.csv,.xml,.yaml,.yml,.html,.css,.js,.ts,.py,.sh,.txt,.log" class="hidden">
+                </div>
+
+                <!-- 設定 -->
+                <div class="bg-gray-800 p-4 rounded-lg shadow border border-gray-700 flex flex-col gap-3">
+                    <h2 class="text-sm font-semibold text-gray-400">設定</h2>
+
+                    <div class="flex items-center gap-3">
+                        <label for="chunk-size-slider" class="text-sm text-gray-300 whitespace-nowrap w-24 flex-shrink-0">チャンクサイズ</label>
+                        <input id="chunk-size-slider" type="range" min="100" max="2000" step="50" value="300"
+                            class="accent-[#32cd32] flex-1">
+                        <span id="chunk-size-label" class="font-mono text-[#32cd32] w-16 text-right text-sm">300 byte</span>
+                    </div>
+
+                </div>
+
+                <!-- 生成ボタン -->
+                <button
+                    id="btn-generate"
+                    class="w-full py-3 bg-[#32cd32] hover:bg-[#28a428] text-black font-bold rounded transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                    QRコード生成
+                </button>
+
+            </div>
+
+            <!-- 右カラム: 統計 -->
+            <div class="flex flex-col gap-4">
+
+                <div class="bg-gray-800 p-4 rounded-lg shadow border border-gray-700">
+                    <h2 class="text-sm font-semibold text-gray-400 mb-3">セッション情報</h2>
+                    <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
+                        <div class="text-gray-500">SID</div>
+                        <div id="info-sid" class="text-[#32cd32] font-bold">----</div>
+
+                        <div class="text-gray-500">元サイズ</div>
+                        <div id="info-original" class="text-gray-200">--</div>
+
+                        <div class="text-gray-500">圧縮後</div>
+                        <div id="info-compressed" class="text-gray-200">--</div>
+
+                        <div class="text-gray-500">圧縮率</div>
+                        <div id="info-ratio" class="text-gray-200">--</div>
+
+                        <div class="text-gray-500">チャンク数</div>
+                        <div id="info-chunks" class="text-gray-200">--</div>
+
+                        <div class="text-gray-500">チャンクサイズ</div>
+                        <div id="info-chunksize" class="text-gray-200">--</div>
+                    </div>
+                </div>
+
+                <div class="bg-gray-800 p-4 rounded-lg shadow border border-gray-700">
+                    <h2 class="text-sm font-semibold text-gray-400 mb-3">アクション</h2>
+                    <div class="flex flex-col gap-2">
+                        <button
+                            id="btn-slideshow"
+                            class="w-full py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 font-semibold rounded transition-colors text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            disabled>
+                            スライドショー再生
+                        </button>
+                        <button
+                            id="btn-clear"
+                            class="w-full py-2 bg-gray-700 hover:bg-gray-600 text-gray-400 rounded transition-colors text-sm">
+                            クリア
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- QRグリッド表示エリア -->
+        <div id="qr-grid-section" class="hidden flex flex-col gap-3">
+            <div class="flex items-center justify-between">
+                <h2 class="text-sm font-semibold text-gray-400 border-l-4 border-[#32cd32] pl-2">
+                    生成されたQRコード
+                    <span id="grid-count" class="text-gray-500 font-normal ml-2"></span>
+                </h2>
+            </div>
+            <div id="qr-grid" class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));"></div>
+        </div>
+
+    </div>
+
+    <script>
+    (function () {
+        'use strict';
+
+        // ===== ライブラリチェック =====
+        function checkLibraries() {
+            const missing = [];
+            if (typeof pako === 'undefined') missing.push('pako');
+            if (typeof QRCode === 'undefined') missing.push('qrcode.js');
+            return missing;
+        }
+
+        // ===== 定数 =====
+        const QR_SIZE = 600;  // px
+
+        // ===== 状態 =====
+        let currentChunks = [];       // { header: string, seq: number, total: number }[]
+        let currentSid = null;
+        let slideshowIndex = 0;
+        let slideshowTimer = null;
+        let slideshowPaused = false;
+        let slideshowInterval = 800;
+        let progressAnimTimer = null;
+
+        // ===== DOM参照 =====
+        const inputTextarea    = document.getElementById('input-textarea');
+        const dropZone         = document.getElementById('drop-zone');
+        const fileInput        = document.getElementById('file-input');
+        const chunkSizeSlider  = document.getElementById('chunk-size-slider');
+        const chunkSizeLabel   = document.getElementById('chunk-size-label');
+        const btnGenerate      = document.getElementById('btn-generate');
+        const btnSlideshow     = document.getElementById('btn-slideshow');
+        const btnClear         = document.getElementById('btn-clear');
+        const statusBar        = document.getElementById('status-bar');
+
+        const infoSid          = document.getElementById('info-sid');
+        const infoOriginal     = document.getElementById('info-original');
+        const infoCompressed   = document.getElementById('info-compressed');
+        const infoRatio        = document.getElementById('info-ratio');
+        const infoChunks       = document.getElementById('info-chunks');
+        const infoChunksize    = document.getElementById('info-chunksize');
+
+        const qrGridSection    = document.getElementById('qr-grid-section');
+        const qrGrid           = document.getElementById('qr-grid');
+        const gridCount        = document.getElementById('grid-count');
+
+        const slideshowOverlay = document.getElementById('slideshow-overlay');
+        const slideshowQrContainer = document.getElementById('slideshow-qr-container');
+        const slideshowLabel   = document.getElementById('slideshow-label');
+        const slideshowProgressBar = document.getElementById('slideshow-progress-bar-inner');
+        const ssIntervalSlider = document.getElementById('ss-interval-slider');
+        const ssIntervalLabel  = document.getElementById('ss-interval-label');
+        const btnSsPrev        = document.getElementById('btn-ss-prev');
+        const btnSsNext        = document.getElementById('btn-ss-next');
+        const btnSsPlaypause   = document.getElementById('btn-ss-playpause');
+        const btnSsClose       = document.getElementById('btn-ss-close');
+
+        // ===== ユーティリティ =====
+
+        /**
+         * バイト数を人間に読みやすい形式にフォーマットする
+         * @param {number} bytes
+         * @returns {string}
+         */
+        function formatBytes(bytes) {
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+        }
+
+        /**
+         * ランダムな6桁数字のSIDを生成する
+         * crypto.getRandomValues() を使用してセキュアな乱数を生成する
+         * @returns {string}
+         */
+        function generateSid() {
+            const buf = new Uint32Array(1);
+            crypto.getRandomValues(buf);
+            return String(buf[0] % 1000000).padStart(6, '0');
+        }
+
+        /**
+         * 数値をゼロパディング3桁文字列にフォーマットする
+         * @param {number} n
+         * @returns {string}
+         */
+        function pad3(n) {
+            return String(n).padStart(3, '0');
+        }
+
+        /**
+         * ステータスバーを更新する
+         * @param {string} message
+         * @param {'default'|'error'|'ready'} type
+         */
+        function setStatus(message, type) {
+            statusBar.textContent = message;
+            statusBar.className = '';
+            if (type === 'error') statusBar.className = 'error';
+            else if (type === 'ready') statusBar.className = 'ready';
+            // それ以外はデフォルト（グレー）
+            // 明示的にfont-sizeをインラインで維持するため style属性は触らない
+        }
+
+        // ===== コアロジック =====
+
+        /**
+         * テキストをgzip圧縮しBase64文字列を返す
+         * @param {string} text
+         * @returns {{ compressed: Uint8Array, base64: string }}
+         */
+        function compressText(text) {
+            const encoder = new TextEncoder();
+            const uint8 = encoder.encode(text);
+            const compressed = pako.gzip(uint8);
+            // btoa用にバイナリ文字列に変換
+            let binaryString = '';
+            const chunkSize = 8192;
+            for (let i = 0; i < compressed.length; i += chunkSize) {
+                const slice = compressed.subarray(i, i + chunkSize);
+                binaryString += String.fromCharCode.apply(null, slice);
+            }
+            const base64 = btoa(binaryString);
+            return { compressed, base64 };
+        }
+
+        /**
+         * Base64文字列をchunkSizeバイト単位でチャンクに分割する
+         * @param {string} base64
+         * @param {number} chunkSize
+         * @returns {string[]}
+         */
+        function splitIntoChunks(base64, chunkSize) {
+            const chunks = [];
+            for (let i = 0; i < base64.length; i += chunkSize) {
+                chunks.push(base64.slice(i, i + chunkSize));
+            }
+            return chunks;
+        }
+
+        /**
+         * QRTフォーマットのヘッダー付きチャンク文字列を生成する
+         * @param {string} sid
+         * @param {string[]} chunks
+         * @returns {string[]} フォーマット済みのペイロード配列
+         */
+        function buildQrtPayloads(sid, chunks) {
+            const total = chunks.length;
+            return chunks.map((chunk, i) => {
+                const seq = pad3(i + 1);
+                const tot = pad3(total);
+                return `QRT|${sid}|${seq}/${tot}|${chunk}`;
+            });
+        }
+
+        // ===== QRコード生成 =====
+
+        /**
+         * 1つのQRコード要素をDOMに生成してcanvasに描画する
+         * qrcode.jsはDOM要素に直接描画するためコンテナdivを受け取る
+         * @param {HTMLElement} container
+         * @param {string} text
+         * @param {number} size
+         * @returns {Promise<void>}
+         */
+        function renderQrToElement(container, text, size) {
+            return new Promise((resolve, reject) => {
+                try {
+                    // qrcode.jsはコンテナに直接appendする
+                    new QRCode(container, {
+                        text: text,
+                        width: size,
+                        height: size,
+                        correctLevel: QRCode.CorrectLevel.Q,
+                        colorDark: '#000000',
+                        colorLight: '#ffffff',
+                    });
+                    resolve();
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        }
+
+        /**
+         * メインの生成処理
+         */
+        async function generateQRCodes() {
+            const text = inputTextarea.value;
+            if (!text.trim()) {
+                setStatus('テキストを入力してください', 'error');
+                return;
+            }
+
+            const missing = checkLibraries();
+            if (missing.length > 0) {
+                setStatus(`ライブラリ未読込: ${missing.join(', ')}`, 'error');
+                return;
+            }
+
+            const chunkSize = parseInt(chunkSizeSlider.value, 10);
+
+            setStatus('処理中...', 'default');
+            btnGenerate.disabled = true;
+
+            // 非同期処理を次のイベントループに回してUIを更新させる
+            await new Promise(r => setTimeout(r, 10));
+
+            try {
+                // 1. gzip圧縮
+                const { compressed, base64 } = compressText(text);
+
+                // 2. SID生成
+                const sid = generateSid();
+                currentSid = sid;
+
+                // 3. チャンク分割
+                const rawChunks = splitIntoChunks(base64, chunkSize);
+
+                // 4. QRTペイロード生成
+                const payloads = buildQrtPayloads(sid, rawChunks);
+
+                // 5. 状態を保存
+                currentChunks = payloads;
+
+                // 6. 統計情報を更新
+                const originalSize = new TextEncoder().encode(text).length;
+                const compressedSize = compressed.length;
+                const ratio = ((1 - compressedSize / originalSize) * 100).toFixed(1);
+
+                infoSid.textContent = sid;
+                infoOriginal.textContent = formatBytes(originalSize);
+                infoCompressed.textContent = formatBytes(compressedSize);
+                infoRatio.textContent = originalSize > 0
+                    ? `${ratio}% 削減`
+                    : '--';
+                infoChunks.textContent = `${payloads.length} 枚`;
+                infoChunksize.textContent = `${chunkSize} byte`;
+
+                // 7. QRグリッドをクリアして再描画
+                qrGrid.innerHTML = '';
+
+                for (let i = 0; i < payloads.length; i++) {
+                    const payload = payloads[i];
+                    const cell = document.createElement('div');
+                    cell.className = 'qr-cell';
+
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'qr-canvas-wrapper';
+
+                    const label = document.createElement('div');
+                    label.className = 'qr-label';
+                    label.textContent = `${pad3(i + 1)} / ${pad3(payloads.length)}  SID:${sid}`;
+
+                    cell.appendChild(wrapper);
+                    cell.appendChild(label);
+                    qrGrid.appendChild(cell);
+
+                    try {
+                        await renderQrToElement(wrapper, payload, QR_SIZE);
+                    } catch (qrErr) {
+                        const errMsg = document.createElement('div');
+                        errMsg.className = 'text-red-400 text-xs p-2';
+                        errMsg.textContent = `QR生成エラー: ${qrErr.message}`;
+                        wrapper.appendChild(errMsg);
+                    }
+
+                    // 複数枚の場合、UIが固まらないよう毎フレーム待つ
+                    if (i % 5 === 4) {
+                        await new Promise(r => setTimeout(r, 0));
+                    }
+                }
+
+                // 8. グリッドセクションを表示
+                qrGridSection.classList.remove('hidden');
+                gridCount.textContent = `(${payloads.length} 枚)`;
+
+                // 9. スライドショーボタンを有効化
+                btnSlideshow.disabled = false;
+
+                setStatus(`生成完了: SID=${sid}  ${payloads.length}枚`, 'ready');
+
+            } catch (e) {
+                console.error('QRコード生成エラー:', e);
+                setStatus(`エラー: ${e.message}`, 'error');
+            } finally {
+                btnGenerate.disabled = false;
+            }
+        }
+
+        // ===== クリア =====
+        function clearAll() {
+            inputTextarea.value = '';
+            currentChunks = [];
+            currentSid = null;
+            qrGrid.innerHTML = '';
+            qrGridSection.classList.add('hidden');
+            gridCount.textContent = '';
+            btnSlideshow.disabled = true;
+
+            infoSid.textContent = '----';
+            infoOriginal.textContent = '--';
+            infoCompressed.textContent = '--';
+            infoRatio.textContent = '--';
+            infoChunks.textContent = '--';
+            infoChunksize.textContent = '--';
+
+            setStatus('待機中...', 'default');
+        }
+
+        // ===== スライドショー =====
+
+        /**
+         * スライドショーの指定インデックスのQRをオーバーレイに表示する
+         * @param {number} index 0始まり
+         */
+        async function slideshowShowIndex(index) {
+            if (currentChunks.length === 0) return;
+
+            slideshowIndex = Math.max(0, Math.min(index, currentChunks.length - 1));
+            const total = currentChunks.length;
+            const payload = currentChunks[slideshowIndex];
+
+            // ラベル更新
+            slideshowLabel.textContent = `${pad3(slideshowIndex + 1)} / ${pad3(total)}  SID:${currentSid}`;
+
+            // QRを再描画
+            slideshowQrContainer.innerHTML = '';
+            try {
+                await renderQrToElement(slideshowQrContainer, payload, QR_SIZE);
+            } catch (e) {
+                slideshowQrContainer.textContent = `QR生成エラー: ${e.message}`;
+            }
+        }
+
+        /**
+         * 自動送りのプログレスバーアニメーションをリセット・開始する
+         */
+        function startProgressAnimation() {
+            if (progressAnimTimer) clearInterval(progressAnimTimer);
+            slideshowProgressBar.style.transition = 'none';
+            slideshowProgressBar.style.width = '0%';
+
+            // 次のフレームでtransitionを設定して即座に100%へアニメーション
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    slideshowProgressBar.style.transition = `width ${slideshowInterval}ms linear`;
+                    slideshowProgressBar.style.width = '100%';
+                });
+            });
+        }
+
+        /**
+         * プログレスバーアニメーションを停止する
+         */
+        function stopProgressAnimation() {
+            if (progressAnimTimer) clearInterval(progressAnimTimer);
+            slideshowProgressBar.style.transition = 'none';
+            slideshowProgressBar.style.width = '0%';
+        }
+
+        /**
+         * スライドショーの自動送りを開始する
+         */
+        function startSlideshowTimer() {
+            if (slideshowTimer) clearInterval(slideshowTimer);
+            startProgressAnimation();
+            slideshowTimer = setInterval(async () => {
+                const next = (slideshowIndex + 1) % currentChunks.length;
+                await slideshowShowIndex(next);
+                startProgressAnimation();
+            }, slideshowInterval);
+        }
+
+        /**
+         * スライドショーの自動送りを停止する
+         */
+        function stopSlideshowTimer() {
+            if (slideshowTimer) clearInterval(slideshowTimer);
+            slideshowTimer = null;
+            stopProgressAnimation();
+        }
+
+        /**
+         * スライドショーオーバーレイを開く
+         */
+        async function openSlideshow() {
+            if (currentChunks.length === 0) return;
+            slideshowIndex = 0;
+            slideshowPaused = false;
+            btnSsPlaypause.textContent = '一時停止';
+            slideshowOverlay.classList.remove('hidden');
+            await slideshowShowIndex(0);
+            startSlideshowTimer();
+        }
+
+        /**
+         * スライドショーオーバーレイを閉じる
+         */
+        function closeSlideshow() {
+            stopSlideshowTimer();
+            slideshowOverlay.classList.add('hidden');
+            slideshowQrContainer.innerHTML = '';
+        }
+
+        // ===== ファイル読み込み =====
+
+        /**
+         * Fileオブジェクトをテキストとしてtextareaにセットする
+         * @param {File} file
+         */
+        function readFileToTextarea(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const result = e.target.result;
+                if (typeof result !== 'string') {
+                    setStatus('ファイルの読み込みに失敗しました', 'error');
+                    return;
+                }
+                inputTextarea.value = result;
+                setStatus(`ファイル読み込み完了: ${file.name} (${formatBytes(file.size)})`, 'ready');
+            };
+            reader.onerror = () => {
+                setStatus(`ファイル読み込みエラー: ${reader.error.message}`, 'error');
+            };
+            reader.readAsText(file, 'UTF-8');
+        }
+
+        // ===== イベントリスナー登録 =====
+
+        // チャンクサイズスライダー
+        chunkSizeSlider.addEventListener('input', () => {
+            chunkSizeLabel.textContent = `${chunkSizeSlider.value} byte`;
+        });
+
+        // 生成ボタン
+        btnGenerate.addEventListener('click', generateQRCodes);
+
+        // クリアボタン
+        btnClear.addEventListener('click', clearAll);
+
+        // スライドショーボタン
+        btnSlideshow.addEventListener('click', openSlideshow);
+
+        // ファイルドロップゾーン
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                fileInput.click();
+            }
+        });
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('drag-over');
+        });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                readFileToTextarea(files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                readFileToTextarea(fileInput.files[0]);
+                // 同じファイルを再選択できるようリセット
+                fileInput.value = '';
+            }
+        });
+
+        // スライドショー: 前へ
+        btnSsPrev.addEventListener('click', async () => {
+            stopSlideshowTimer();
+            const prev = (slideshowIndex - 1 + currentChunks.length) % currentChunks.length;
+            await slideshowShowIndex(prev);
+            if (!slideshowPaused) {
+                startSlideshowTimer();
+            }
+        });
+
+        // スライドショー: 次へ
+        btnSsNext.addEventListener('click', async () => {
+            stopSlideshowTimer();
+            const next = (slideshowIndex + 1) % currentChunks.length;
+            await slideshowShowIndex(next);
+            if (!slideshowPaused) {
+                startSlideshowTimer();
+            }
+        });
+
+        // スライドショー: 再生/一時停止
+        btnSsPlaypause.addEventListener('click', () => {
+            slideshowPaused = !slideshowPaused;
+            if (slideshowPaused) {
+                stopSlideshowTimer();
+                btnSsPlaypause.textContent = '再生';
+            } else {
+                btnSsPlaypause.textContent = '一時停止';
+                startSlideshowTimer();
+            }
+        });
+
+        // スライドショー: 閉じる
+        btnSsClose.addEventListener('click', closeSlideshow);
+
+        // スライドショー: キーボード操作
+        document.addEventListener('keydown', async (e) => {
+            if (slideshowOverlay.classList.contains('hidden')) return;
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                e.preventDefault();
+                stopSlideshowTimer();
+                const next = (slideshowIndex + 1) % currentChunks.length;
+                await slideshowShowIndex(next);
+                if (!slideshowPaused) startSlideshowTimer();
+            } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                stopSlideshowTimer();
+                const prev = (slideshowIndex - 1 + currentChunks.length) % currentChunks.length;
+                await slideshowShowIndex(prev);
+                if (!slideshowPaused) startSlideshowTimer();
+            } else if (e.key === ' ') {
+                e.preventDefault();
+                btnSsPlaypause.click();
+            } else if (e.key === 'Escape') {
+                closeSlideshow();
+            }
+        });
+
+        // スライドショー: 間隔スライダー
+        ssIntervalSlider.addEventListener('input', () => {
+            slideshowInterval = parseInt(ssIntervalSlider.value, 10);
+            ssIntervalLabel.textContent = `${slideshowInterval}ms`;
+            if (!slideshowPaused && slideshowTimer) {
+                // タイマーを更新された間隔で再起動
+                stopSlideshowTimer();
+                startSlideshowTimer();
+            }
+        });
+
+        // ===== 初期化 =====
+        window.addEventListener('DOMContentLoaded', () => {
+            // ライブラリ確認
+            const missing = checkLibraries();
+            if (missing.length > 0) {
+                setStatus(`ライブラリ未読込: ${missing.join(', ')}`, 'error');
+            } else {
+                setStatus('準備完了', 'ready');
+                // すぐにデフォルトに戻す
+                setTimeout(() => {
+                    if (statusBar.textContent === '準備完了') setStatus('待機中...', 'default');
+                }, 2000);
+            }
+        });
+
+    })();
+    </script>
+</body>
+</html>

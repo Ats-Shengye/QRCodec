@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced QR Reconstructor</title>
+    <script src="https://cdn.tailwindcss.com/3.4.17" integrity="sha384-igm5BeiBt36UU4gqwWS7imYmelpTsZlQ45FZf+XBn9MuJbn4nQr7yx1yFydocC/K" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js" integrity="sha384-rNlaE5fs9dGIjmxWDALQh/RBAaGRYT5ChrzHo6tRfgrZ36iRFAiquP5g41Jsv+0j" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js" integrity="sha384-9Q0jWoineiIq95JeIyBsNV90KKLfDsbkj29k/YFxf76a2JwkHDYkMuSbNGN6XJfV" crossorigin="anonymous"></script>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #f3f4f6;
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .canvas-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: 0 auto;
+        }
+        canvas {
+            width: 100%;
+            height: auto;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            background-color: #000;
+        }
+        .scan-line {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background-color: #32cd32;
+            box-shadow: 0 0 10px #32cd32;
+            animation: scan 2s infinite linear;
+            display: none;
+            z-index: 10;
+        }
+        @keyframes scan {
+            0% { top: 0; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+        .scanning .scan-line {
+            display: block;
+        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #2d3748; }
+        ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #32cd32; }
+        #debug-bar {
+            font-size: 11px;
+            color: #888;
+            text-align: center;
+            padding: 4px;
+        }
+        #debug-bar.error { color: #f87171; }
+        #debug-bar.detected { color: #32cd32; }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8 flex flex-col items-center">
+
+    <div class="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-6">
+
+        <div class="flex flex-col gap-4">
+            <div class="flex items-center justify-between">
+                <h1 class="text-xl font-bold border-l-4 border-[#32cd32] pl-2">QR Reconstructor</h1>
+                <span id="camera-status" class="px-2 py-1 text-xs rounded bg-gray-700 text-gray-300">初期化中...</span>
+            </div>
+
+            <div class="canvas-container" id="container">
+                <canvas id="qr-canvas"></canvas>
+                <div class="scan-line"></div>
+            </div>
+            <div id="debug-bar">--</div>
+
+            <div class="flex gap-2 justify-center">
+                <button id="btn-start" class="px-4 py-2 bg-[#32cd32] hover:bg-[#28a428] text-black font-semibold rounded transition-colors hidden">スキャン開始</button>
+                <button id="btn-stop" class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded transition-colors hidden">停止</button>
+            </div>
+        </div>
+
+        <div class="flex flex-col gap-4">
+
+            <div class="bg-gray-800 p-4 rounded-lg shadow border border-gray-700">
+                <h2 class="text-sm font-semibold text-gray-400 mb-2">現在のセッション (SID)</h2>
+                <div id="session-sid" class="text-2xl font-mono text-[#32cd32] mb-4">Wait...</div>
+
+                <h2 class="text-sm font-semibold text-gray-400 mb-2">進行状況</h2>
+                <div class="w-full bg-gray-700 rounded-full h-4 mb-2 overflow-hidden relative">
+                    <div id="progress-bar" class="bg-[#32cd32] h-4 transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <div class="text-right text-xs text-gray-400 font-mono" id="progress-text">0 / 0</div>
+            </div>
+
+            <div class="bg-gray-800 p-4 rounded-lg shadow border border-gray-700 flex-grow flex flex-col">
+                <h2 class="text-sm font-semibold text-gray-400 mb-2">欠番チェック (Missing SEQ)</h2>
+                <div id="missing-list" class="flex-grow bg-gray-900 rounded p-2 text-sm font-mono text-yellow-400 overflow-y-auto max-h-32 border border-gray-700 break-all">
+                    待機中...
+                </div>
+            </div>
+
+            <div class="bg-gray-800 p-4 rounded-lg shadow border border-gray-700 flex-grow flex flex-col">
+                <h2 class="text-sm font-semibold text-gray-400 mb-2 flex justify-between items-center">
+                    <span>デコード結果</span>
+                    <div class="flex gap-2">
+                        <button id="btn-copy" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors">コピー</button>
+                        <button id="btn-save-txt" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors">.txt保存</button>
+                        <button id="btn-save-html" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors">.html保存</button>
+                    </div>
+                </h2>
+                <textarea id="result-text" class="w-full flex-grow min-h-[150px] bg-gray-900 text-gray-200 p-3 rounded font-mono text-sm border border-gray-700 focus:outline-none focus:border-[#32cd32] resize-none" readonly placeholder="ここに復元されたデータが表示されます..."></textarea>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // === QRスキャナー抽象化: BarcodeDetector優先、jsQRフォールバック ===
+        class QRScanner {
+            constructor() {
+                this.useBarcodeDetector = false;
+                this.detector = null;
+                this.engineName = 'none';
+            }
+
+            async init() {
+                // BarcodeDetector API チェック (Chrome Android で利用可能)
+                if ('BarcodeDetector' in window) {
+                    try {
+                        const formats = await BarcodeDetector.getSupportedFormats();
+                        if (formats.includes('qr_code')) {
+                            this.detector = new BarcodeDetector({ formats: ['qr_code'] });
+                            this.useBarcodeDetector = true;
+                            this.engineName = 'BarcodeDetector (native)';
+                            return;
+                        }
+                    } catch (e) {
+                        console.warn('BarcodeDetector init failed:', e);
+                    }
+                }
+                // フォールバック: jsQR
+                if (typeof jsQR !== 'undefined') {
+                    this.engineName = 'jsQR (fallback)';
+                } else {
+                    this.engineName = 'NO ENGINE';
+                }
+            }
+
+            // ImageBitmapSource (canvas/video) または ImageData を受け取る
+            async scan(source, imageData) {
+                if (this.useBarcodeDetector) {
+                    try {
+                        const results = await this.detector.detect(source);
+                        if (results.length > 0) {
+                            return {
+                                data: results[0].rawValue,
+                                location: this._convertBbox(results[0].boundingBox, results[0].cornerPoints)
+                            };
+                        }
+                    } catch (e) {
+                        console.warn('BarcodeDetector.detect error:', e);
+                    }
+                    return null;
+                }
+
+                // jsQR フォールバック
+                if (typeof jsQR === 'undefined') return null;
+                const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                    inversionAttempts: "attemptBoth",
+                });
+                return code;
+            }
+
+            _convertBbox(bbox, cornerPoints) {
+                if (cornerPoints && cornerPoints.length === 4) {
+                    return {
+                        topLeftCorner: cornerPoints[0],
+                        topRightCorner: cornerPoints[1],
+                        bottomRightCorner: cornerPoints[2],
+                        bottomLeftCorner: cornerPoints[3],
+                    };
+                }
+                return {
+                    topLeftCorner: { x: bbox.x, y: bbox.y },
+                    topRightCorner: { x: bbox.x + bbox.width, y: bbox.y },
+                    bottomRightCorner: { x: bbox.x + bbox.width, y: bbox.y + bbox.height },
+                    bottomLeftCorner: { x: bbox.x, y: bbox.y + bbox.height },
+                };
+            }
+        }
+
+        const qrScanner = new QRScanner();
+
+        // === ライブラリ読み込みチェック ===
+        window.addEventListener('DOMContentLoaded', async () => {
+            const db = document.getElementById('debug-bar');
+            await qrScanner.init();
+            db.textContent = `Engine: ${qrScanner.engineName}`;
+            if (qrScanner.engineName === 'NO ENGINE') {
+                db.className = 'error';
+                document.getElementById('camera-status').textContent = 'QRエンジンなし';
+                document.getElementById('camera-status').classList.replace('bg-gray-700', 'bg-red-700');
+            }
+            if (typeof pako === 'undefined') {
+                db.textContent += ' | pako未読込';
+                db.className = 'error';
+            }
+        });
+
+        class QRDataReconstructor {
+            constructor() {
+                this.sessions = new Map();
+                this.completedSids = new Set();
+            }
+
+            processQRCode(rawText) {
+                const parts = rawText.split('|');
+                if (parts[0] !== 'QRT' || parts.length < 4) return { status: 'invalid' };
+
+                const sid = parts[1];
+
+                // 完了済みSIDは無視
+                if (this.completedSids.has(sid)) return { status: 'already_done', sid };
+                const seqInfo = parts[2].split('/');
+                if (seqInfo.length !== 2) return { status: 'invalid' };
+
+                const currentSeq = parseInt(seqInfo[0], 10);
+                const totalSeq = parseInt(seqInfo[1], 10);
+                const base64Payload = parts[3];
+
+                if (!this.sessions.has(sid)) {
+                    this.sessions.set(sid, {
+                        total: totalSeq,
+                        chunks: new Array(totalSeq).fill(null),
+                        receivedCount: 0
+                    });
+                }
+
+                const session = this.sessions.get(sid);
+
+                if (session.chunks[currentSeq - 1] === null) {
+                    session.chunks[currentSeq - 1] = base64Payload;
+                    session.receivedCount++;
+                }
+
+                const missing = session.chunks
+                    .map((v, i) => v === null ? i + 1 : null)
+                    .filter(v => v !== null);
+
+                if (session.receivedCount === session.total) {
+                    const result = this.reconstruct(sid);
+                    return { status: 'complete', sid, result, total: session.total };
+                }
+
+                return {
+                    status: 'progress',
+                    sid,
+                    received: session.receivedCount,
+                    total: session.total,
+                    missing
+                };
+            }
+
+            reconstruct(sid) {
+                const session = this.sessions.get(sid);
+                try {
+                    const fullBase64 = session.chunks.join('');
+                    const binaryString = atob(fullBase64);
+                    const uint8Array = Uint8Array.from(binaryString, c => c.charCodeAt(0));
+                    const decompressed = pako.inflate(uint8Array, { to: 'string' });
+
+                    this.sessions.delete(sid);
+                    this.completedSids.add(sid);
+                    return decompressed;
+                } catch (e) {
+                    console.error("復元エラー:", e);
+                    return `[復元エラー] ${e.message}`;
+                }
+            }
+        }
+
+        const video = document.createElement('video');
+        const canvasElement = document.getElementById('qr-canvas');
+        const canvas = canvasElement.getContext('2d', { willReadFrequently: true });
+        const container = document.getElementById('container');
+        const debugBar = document.getElementById('debug-bar');
+
+        const reconstructor = new QRDataReconstructor();
+
+        let scanning = false;
+        let animationFrameId = null;
+        let lastScanTime = 0;
+        let scanCount = 0;
+        let detectCount = 0;
+        const SCAN_INTERVAL = 300;
+
+        const uiStatus = document.getElementById('camera-status');
+        const btnStart = document.getElementById('btn-start');
+        const btnStop = document.getElementById('btn-stop');
+        const uiSid = document.getElementById('session-sid');
+        const uiProgress = document.getElementById('progress-bar');
+        const uiProgressText = document.getElementById('progress-text');
+        const uiMissing = document.getElementById('missing-list');
+        const uiResult = document.getElementById('result-text');
+
+        async function initCamera() {
+            if (qrScanner.engineName === 'NO ENGINE') return;
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: "environment",
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+                video.srcObject = stream;
+                video.setAttribute("playsinline", true);
+                await video.play();
+
+                // カメラの実解像度でcanvasを設定
+                canvasElement.width = video.videoWidth;
+                canvasElement.height = video.videoHeight;
+
+                uiStatus.textContent = `${video.videoWidth}x${video.videoHeight}`;
+                uiStatus.classList.replace('bg-gray-700', 'bg-green-700');
+                btnStart.classList.remove('hidden');
+
+                startScan();
+            } catch (err) {
+                console.error("カメラのアクセスに失敗しました:", err);
+                uiStatus.textContent = "カメラ接続エラー";
+                uiStatus.classList.replace('bg-gray-700', 'bg-red-700');
+                uiResult.value = `カメラエラー: ${err.name}\n${err.message}`;
+            }
+        }
+
+        function startScan() {
+            if (scanning) return;
+            scanning = true;
+            scanCount = 0;
+            detectCount = 0;
+            container.classList.add('scanning');
+            btnStart.classList.add('hidden');
+            btnStop.classList.remove('hidden');
+            uiResult.value = "";
+            requestAnimationFrame(tick);
+        }
+
+        function stopScan() {
+            scanning = false;
+            container.classList.remove('scanning');
+            btnStart.classList.remove('hidden');
+            btnStop.classList.add('hidden');
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(t => t.stop());
+                video.srcObject = null;
+            }
+        }
+
+        function tick(currentTime) {
+            if (!scanning) return;
+
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                // フル映像をそのまま描画（正方形クロップしない）
+                canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+
+                if (currentTime - lastScanTime >= SCAN_INTERVAL) {
+                    lastScanTime = currentTime;
+                    performScan();
+                }
+            }
+            animationFrameId = requestAnimationFrame(tick);
+        }
+
+        async function performScan() {
+            scanCount++;
+            const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
+
+            // BarcodeDetectorにはcanvas要素を、jsQRにはimageDataを渡す
+            const code = await qrScanner.scan(canvasElement, imageData);
+
+            if (code) {
+                detectCount++;
+                drawRect(code.location, '#32cd32');
+                debugBar.textContent = `[${qrScanner.engineName}] #${scanCount} | hit: ${detectCount} | "${code.data.substring(0, 50)}..."`;
+                debugBar.className = 'detected';
+
+                const res = reconstructor.processQRCode(code.data);
+                updateUI(res);
+            } else {
+                debugBar.textContent = `[${qrScanner.engineName}] #${scanCount} | hit: ${detectCount} | no QR`;
+                debugBar.className = '';
+            }
+        }
+
+        function drawRect(location, color) {
+            canvas.beginPath();
+            canvas.moveTo(location.topLeftCorner.x, location.topLeftCorner.y);
+            canvas.lineTo(location.topRightCorner.x, location.topRightCorner.y);
+            canvas.lineTo(location.bottomRightCorner.x, location.bottomRightCorner.y);
+            canvas.lineTo(location.bottomLeftCorner.x, location.bottomLeftCorner.y);
+            canvas.lineTo(location.topLeftCorner.x, location.topLeftCorner.y);
+            canvas.lineWidth = 6;
+            canvas.strokeStyle = color;
+            canvas.stroke();
+        }
+
+        function updateUI(res) {
+            if (res.status === 'invalid' || res.status === 'already_done') return;
+
+            uiSid.textContent = res.sid;
+
+            if (res.status === 'progress') {
+                const percent = (res.received / res.total) * 100;
+                uiProgress.style.width = `${percent}%`;
+                uiProgressText.textContent = `${res.received} / ${res.total} チャンク`;
+
+                if (res.missing.length > 0) {
+                    uiMissing.textContent = `Missing: ${res.missing.join(', ')}`;
+                } else {
+                    uiMissing.textContent = "全チャンク待機中...";
+                }
+            }
+            else if (res.status === 'complete') {
+                uiProgress.style.width = `100%`;
+                uiProgressText.textContent = `${res.total} / ${res.total} 完了`;
+                uiMissing.textContent = "全チャンク受信完了";
+                uiResult.value = res.result;
+                stopScan();
+
+                uiSid.classList.add('animate-pulse');
+                setTimeout(() => uiSid.classList.remove('animate-pulse'), 2000);
+            }
+        }
+
+        document.getElementById('btn-copy').addEventListener('click', () => {
+            const text = uiResult.value;
+            if (!text) return;
+
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = document.getElementById('btn-copy');
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                btn.classList.add('bg-[#32cd32]', 'text-black');
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.classList.remove('bg-[#32cd32]', 'text-black');
+                }, 2000);
+            }).catch(() => {
+                // フォールバック
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            });
+        });
+
+        function saveFile(content, filename, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        document.getElementById('btn-save-txt').addEventListener('click', () => {
+            const text = uiResult.value;
+            if (!text) return;
+            const sid = uiSid.textContent || 'output';
+            saveFile(text, `${sid}.txt`, 'text/plain;charset=utf-8');
+        });
+
+        document.getElementById('btn-save-html').addEventListener('click', () => {
+            const text = uiResult.value;
+            if (!text) return;
+            const sid = uiSid.textContent || 'output';
+            saveFile(text, `${sid}.html`, 'text/html;charset=utf-8');
+        });
+
+        btnStart.addEventListener('click', startScan);
+        btnStop.addEventListener('click', stopScan);
+
+        window.onload = initCamera;
+    </script>
+</body>
+</html>
