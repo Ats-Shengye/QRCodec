@@ -4,11 +4,14 @@
 Serves only HTML/JS/CSS files. Denies access to .pem and .py files
 to prevent accidental exposure of private keys and source code.
 """
+import argparse
 import http.server
 import os
+import posixpath
 import ssl
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 
 PORT: int = 8443
@@ -18,26 +21,59 @@ DIR: Path = Path(__file__).resolve().parent
 DENIED_EXTENSIONS: frozenset[str] = frozenset({'.pem', '.py'})
 
 
+def _is_denied_path(url_path: str) -> bool:
+    """URL-decode and normalize the path, then check extension against deny list.
+
+    Handles URL-encoded dots (%2E/%2e) and path normalization (e.g., /key.pem/.)
+    to prevent bypass of extension checks.
+    Query strings and fragments are stripped before checking.
+    """
+    clean = unquote(url_path.split('?', 1)[0].split('#', 1)[0])
+    clean = posixpath.normpath(clean)
+    ext = os.path.splitext(clean)[1].lower()
+    return ext in DENIED_EXTENSIONS
+
+
 class SecureHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     """証明書ファイルとPythonファイルへのアクセスを拒否するハンドラ。"""
 
     def do_GET(self) -> None:
         """GETリクエストを処理する。拒否対象の拡張子は403を返す。"""
-        path = self.path.split('?', 1)[0].split('#', 1)[0]
-        ext = os.path.splitext(path)[1].lower()
-        if ext in DENIED_EXTENSIONS:
+        if _is_denied_path(self.path):
             self.send_error(403, 'Forbidden')
             return
         super().do_GET()
 
     def do_HEAD(self) -> None:
         """HEADリクエストを処理する。拒否対象の拡張子は403を返す。"""
-        path = self.path.split('?', 1)[0].split('#', 1)[0]
-        ext = os.path.splitext(path)[1].lower()
-        if ext in DENIED_EXTENSIONS:
+        if _is_denied_path(self.path):
             self.send_error(403, 'Forbidden')
             return
         super().do_HEAD()
+
+    def end_headers(self) -> None:
+        """レスポンスにセキュリティヘッダーを付与する。"""
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header(
+            'Content-Security-Policy',
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-eval' "
+            "https://cdn.tailwindcss.com "
+            "https://cdnjs.cloudflare.com "
+            "https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "media-src 'self'; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'"
+        )
+        self.send_header(
+            'Permissions-Policy',
+            'camera=(self), microphone=(), geolocation=()'
+        )
+        super().end_headers()
 
 
 def create_ssl_context(cert_path: Path, key_path: Path) -> Optional[ssl.SSLContext]:
@@ -81,6 +117,17 @@ def create_ssl_context(cert_path: Path, key_path: Path) -> Optional[ssl.SSLConte
 
 def main() -> None:
     """サーバーを起動する。"""
+    parser = argparse.ArgumentParser(description='QRCodec HTTPS development server')
+    parser.add_argument(
+        '--bind', default='0.0.0.0',
+        help='Bind address (default: 0.0.0.0)',
+    )
+    parser.add_argument(
+        '--port', type=int, default=PORT,
+        help=f'Port number (default: {PORT})',
+    )
+    args = parser.parse_args()
+
     os.chdir(DIR)
 
     cert_path = DIR / 'cert.pem'
@@ -90,10 +137,17 @@ def main() -> None:
     if ctx is None:
         raise SystemExit(1)
 
-    server = http.server.HTTPServer(('0.0.0.0', PORT), SecureHTTPRequestHandler)
+    if args.bind == '0.0.0.0':
+        print('[WARN] Listening on all interfaces — '
+              'LAN上の全デバイスからアクセス可能です。'
+              ' --bind 127.0.0.1 でローカル限定にできます。')
+
+    server = http.server.HTTPServer(
+        (args.bind, args.port), SecureHTTPRequestHandler,
+    )
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
 
-    print(f'QRCodec server running on https://0.0.0.0:{PORT}')
+    print(f'QRCodec server running on https://{args.bind}:{args.port}')
     server.serve_forever()
 
 

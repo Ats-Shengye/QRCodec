@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self' 'unsafe-eval' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; object-src 'none'">
     <title>Advanced QR Reconstructor</title>
     <script src="https://cdn.tailwindcss.com/3.4.17" integrity="sha384-igm5BeiBt36UU4gqwWS7imYmelpTsZlQ45FZf+XBn9MuJbn4nQr7yx1yFydocC/K" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js" integrity="sha384-rNlaE5fs9dGIjmxWDALQh/RBAaGRYT5ChrzHo6tRfgrZ36iRFAiquP5g41Jsv+0j" crossorigin="anonymous"></script>
@@ -482,6 +484,7 @@
         document.getElementById('btn-save-html').addEventListener('click', () => {
             const text = uiResult.value;
             if (!text) return;
+            if (!confirm('HTMLファイルとして保存します。信頼できるソースからのデータですか？')) return;
             const sid = uiSid.textContent || 'output';
             saveFile(text, `${sid}.html`, 'text/html;charset=utf-8');
         });
